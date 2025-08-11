@@ -1,13 +1,12 @@
 import copy
-
 import numpy as np
-import os
+# import os
 import pickle
 from pathlib import Path
 from tqdm import tqdm
 import open3d as o3d
 from typing import List, Tuple
-import shutil
+# import shutil
 from ..dataset import DatasetTemplate
 from ...ops.roiaware_pool3d import roiaware_pool3d_utils
 from scipy.spatial.transform import Rotation as R
@@ -16,22 +15,155 @@ from .kl import KL
 from pcdet.utils import common_utils
 import random
 
-def read_bin(bin_file):
-    dtype = np.dtype([
-        ('x', np.float32),  # 4 bytes
-        ('y', np.float32),  # 4 bytes
-        ('z', np.float32),  # 4 bytes
-        ('intensity',np.float32),
-        ('ring',np.float32),
-        ('timestamp_2us',np.float32),
-    ])
+def check_nan_inf(arr):
+    """
+    检查数组中是否有 NaN 或 Inf，并打印其位置。
     
-    # 读取 .bin 文件
-    data = np.fromfile(bin_file, dtype=dtype)
-    # points = data.reshape(-1, 6)
-    # 提取 x, y, z 坐标和intensity，符合kitti数据格式
-    points = np.vstack((data['x'], data['y'], data['z'],data['intensity'])).transpose()
-    return points
+    :param arr: numpy 数组
+    :return: True（如果有 NaN 或 Inf），否则 False
+    """
+    
+    if arr.dtype.kind in {'U', 'S', 'O'}:
+        # 判断是否是字符串类型
+        if np.issubdtype(arr.dtype, np.str_) or np.issubdtype(arr.dtype, np.object_):
+            # print("Array contains string data, skipping NaN/Inf check.")
+            return False
+        
+    has_nan = np.isnan(arr)
+    has_inf = np.isinf(arr)
+
+    if np.any(has_nan):
+        print("Found NaN at indices:", np.argwhere(has_nan))
+
+    if np.any(has_inf):
+        print("Found Inf at indices:", np.argwhere(has_inf))
+
+    return np.any(has_nan) or np.any(has_inf)
+
+def read_pcd_with_intensity(pcd_path):
+    # 读取文件头
+    with open(pcd_path, 'rb') as f:
+        header = []
+        while True:
+            line = f.readline().decode('utf-8').strip()
+            header.append(line)
+            if line.startswith('DATA'):
+                break
+
+    # 解析字段、类型、大小
+    fields, size, type_ = None, None, None
+    for line in header:
+        if line.startswith('FIELDS'):
+            fields = line.split()[1:]
+        elif line.startswith('SIZE'):
+            size = list(map(int, line.split()[1:]))
+        elif line.startswith('TYPE'):
+            type_ = line.split()[1:]
+
+    if fields is None or size is None or type_ is None:
+        raise ValueError("Invalid PCD header: missing FIELDS/SIZE/TYPE")
+
+    if not len(fields) == len(size) == len(type_):
+        raise ValueError("FIELDS/SIZE/TYPE length mismatch")
+
+    # 构建 dtype：根据 TYPE 和 SIZE 推断
+    def get_numpy_dtype(t, s):
+        if t == 'F':
+            if s == 4:
+                return np.float32
+            elif s == 8:
+                return np.float64
+        elif t == 'U':
+            if s == 1:
+                return np.uint8
+            elif s == 2:
+                return np.uint16
+            elif s == 4:
+                return np.uint32
+        elif t == 'I':
+            if s == 1:
+                return np.int8
+            elif s == 2:
+                return np.int16
+            elif s == 4:
+                return np.int32
+        raise ValueError(f"Unsupported TYPE/SIZE combination: TYPE={t}, SIZE={s}")
+
+    dtype = np.dtype([(f, get_numpy_dtype(t, s)) for f, t, s in zip(fields, type_, size)])
+
+    # 计算数据起始位置
+    data_offset = len('\n'.join(header)) + 1
+    data = np.fromfile(pcd_path, dtype=dtype, offset=data_offset)
+
+    # 检查字段存在
+    required = {'x', 'y', 'z', 'intensity', 'ring'}
+    if not required.issubset(data.dtype.names):
+        raise ValueError(f"Missing required fields. Expected at least: {required}")
+
+    # 构造输出数据（自动判断是否含有 timestamp_2us）
+    base_fields = ['x', 'y', 'z', 'intensity', 'ring']
+    base_fields = ['x', 'y', 'z', 'intensity']
+    arrs = [data[f].astype(np.float32) for f in base_fields]
+
+    # if 'timestamp_2us' in data.dtype.names:
+    #     arrs.append(data['timestamp_2us'].astype(np.float32))
+
+    all_data = np.vstack(arrs).T
+
+    # 过滤含 NaN 的点
+    valid_mask = ~np.isnan(all_data).any(axis=1)
+    return all_data[valid_mask]
+
+
+def read_pc(pc_file, verbose=False):
+    """
+    读取点云（支持.bin/.pcd），自动过滤NaN/Inf
+    
+    Args:
+        pc_file: 文件路径（Path对象或字符串）
+        verbose: 是否打印调试信息
+        
+    Returns:
+        np.ndarray: (N, 4)的合法点云数据 [x, y, z, intensity]
+    """
+    pc_file = Path(pc_file)
+    if not pc_file.exists():
+        raise FileNotFoundError(f"Point cloud file not found: {pc_file}")
+
+    try:
+        if pc_file.suffix == '.bin':
+            dtype = np.dtype([
+                ('x', np.float32), ('y', np.float32), ('z', np.float32),
+                ('intensity', np.float32), ('ring', np.float32),  # 根据实际格式调整
+                ('timestamp_2us', np.float32)
+            ])
+            data = np.fromfile(pc_file, dtype=dtype)
+            points = np.vstack((data['x'], data['y'], data['z'], data['intensity'])).T
+            
+        elif pc_file.suffix == '.pcd':
+            points = read_pcd_with_intensity(pc_file)
+            
+        else:
+            raise ValueError(f"Unsupported file format: {pc_file.suffix}")
+
+        # 二次检查（防止上游未处理的情况）
+        valid_mask = np.isfinite(points).all(axis=1)
+        if np.any(~valid_mask):
+            points = points[valid_mask]
+            if verbose:
+                print(f"Secondary filtering: Removed {np.sum(~valid_mask)} invalid points")
+
+        # 空数据检查
+        if len(points) == 0:
+            raise ValueError(f"Empty point cloud after filtering: {pc_file}")
+
+        points = points[np.max(np.abs(points[:, :3]), axis=1) < 1e3]  # 保留合理值,防止数值溢出
+        return points
+
+    except Exception as e:
+        raise RuntimeError(f"Error reading {pc_file}: {str(e)}")
+
+
 
 def kl_eval(eval_det_annos, eval_gt_annos):
     pass
@@ -48,6 +180,13 @@ class KLDataset(DatasetTemplate):
         else:
             self.use_camera = False
         self.include_kl_data(self.mode)
+        
+        self.filter_gt_by_points = self.dataset_cfg.get('POINT_FILTER', {}).get('ENABLED', False)
+        self.class_min_points_dict = self.dataset_cfg.get('POINT_FILTER', {}).get('FILTER_MIN_POINTS_BY_CLASS', {})
+        
+        self.intensity_filter_cfg = self.dataset_cfg.get('INTENSITY_FILTER', {})
+        self.use_intensity_filter = self.intensity_filter_cfg.get('ENABLED', False)
+        self.intensity_threshold = self.intensity_filter_cfg.get('THRESHOLD', 0.0)
 
     def include_kl_data(self, mode):
         self.logger.info('Loading KL dataset')
@@ -86,7 +225,13 @@ class KLDataset(DatasetTemplate):
         
         for lidar_name, lidar_extrinsic_name in extrinsic_names.items():
             lidar_path = self.root_path / info['lidars'][lidar_name]
-            points=read_bin(lidar_path)
+            points=read_pc(lidar_path)
+            
+            # ⭐ 如果开启强度过滤
+            if self.use_intensity_filter:
+                intensity = points[:, 3]
+                mask = intensity >= self.intensity_threshold
+                points = points[mask]
             # times = np.zeros((points.shape[0], 1))
             # points = np.concatenate((points, times), axis=1)
             if use_extrinsic:
@@ -107,12 +252,10 @@ class KLDataset(DatasetTemplate):
         info = self.infos[index]
         lidar_path = self.root_path / info['lidars'][lidar_name]
 
-        points=read_bin(lidar_path)
+        points=read_pc(lidar_path)
         times = np.zeros((points.shape[0], 1))
         points = np.concatenate((points, times), axis=1)
         return points
-
-
 
     def __len__(self):
         if self._merge_all_iters_to_one_epoch:
@@ -129,6 +272,7 @@ class KLDataset(DatasetTemplate):
         info = copy.deepcopy(self.infos[index])
 
         points=self.get_merged_lidar(index,True)
+        # check_nan_inf(points)
         input_dict = {
             'points': points,
             'frame_id': Path(info['lidars']['helios_front_left']).stem,
@@ -139,9 +283,26 @@ class KLDataset(DatasetTemplate):
             annos = info['annos']
             gt_names = annos['name']
             gt_boxes_lidar = annos['gt_boxes_lidar']
+            gt_num_lidar_pts=annos['num_lidar_pts']
+            
+            # ⭐ 点数过滤逻辑开始 ⭐
+            if getattr(self, 'filter_gt_by_points', False):
+                keep_mask = np.ones(len(gt_names), dtype=bool)
+                for i in range(len(gt_names)):
+                    cls = gt_names[i]
+                    min_pts = self.class_min_points_dict.get(cls, 0)
+                    if gt_num_lidar_pts[i] < min_pts:
+                        keep_mask[i] = False
+
+                gt_names = gt_names[keep_mask]
+                gt_boxes_lidar = gt_boxes_lidar[keep_mask]
+                gt_num_lidar_pts = gt_num_lidar_pts[keep_mask]
+            # ⭐ 点数过滤逻辑结束 ⭐
+
             input_dict.update({
                 'gt_names': gt_names,
                 'gt_boxes': gt_boxes_lidar
+                # 'gt_num_lidar_pts':gt_num_lidar_pts
             })
 
         if self.use_camera:
@@ -215,7 +376,8 @@ class KLDataset(DatasetTemplate):
             # 工程车辆
             'Crane': 'Crane',                    # 起重机
             'Forklift': 'Forklift',                 # 普通叉车
-            'ConstructionVehicle': 'ConstructionVehicle'       # 工程车
+            'ConstructionVehicle': 'ConstructionVehicle',       # 工程车
+            'WheelCrane':'WheelCrane'
         }
 
         if kwargs['eval_metric'] == 'kitti':
@@ -292,8 +454,8 @@ class KLDataset(DatasetTemplate):
 
 def split_samples(samples):
     total_files = len(samples)
-    train_size = int(total_files * 0.8)
-    val_size = int(total_files * 0.18)
+    train_size = int(total_files * 0.9)
+    val_size = int(total_files * 0.09)
     split_samples = {
         'train': samples[:train_size],
         'val': samples[train_size:train_size + val_size],
@@ -303,6 +465,37 @@ def split_samples(samples):
     val_scenes=split_samples['val']
     test_scenes=split_samples['test']
     return train_samples,val_scenes,test_scenes
+
+def analyze_kl_infos(version, data_path, save_path,with_cam=False):
+    import json
+    from . import kl_dataset_utils
+    from .kl_dataset_utils import convert_json_to_annotations
+    import tqdm
+    import numpy as np
+    from collections import Counter
+    
+    counter = Counter()
+    kl = KL(version=version, dataroot=data_path, verbose=True)
+    samples=kl.get_all_sample()
+    print('total labelled samples:',len(samples))
+    for sample in tqdm.tqdm(kl.samples, desc='create_info', dynamic_ncols=True):
+        with open(sample['label'], 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            annotations=convert_json_to_annotations(data)
+            name=annotations['name']
+            counter.update(name.tolist()) 
+
+    # progress_bar.close()
+
+    # 打印统计结果
+    print('类别统计结果:')
+    total_count = 0
+    for cls_name, count in counter.items():
+        print(f'{cls_name}: {count}')
+        total_count += count
+
+    print(f'\n所有类别的总数：{total_count}')
+    
 
 def create_kl_infos(version, data_path, save_path,with_cam=False):
     from . import kl_dataset_utils
@@ -339,21 +532,39 @@ if __name__ == '__main__':
     parser.add_argument('--version', type=str, default='v1.0-trainval', help='')
     parser.add_argument('--with_cam', action='store_true', default=False, help='use camera or not')
     args = parser.parse_args()
-
-    if args.func == 'create_kl_infos':
+    
+    
+    if args.func == 'analyze_kl_infos':
         dataset_cfg = EasyDict(yaml.safe_load(open(args.cfg_file)))
         ROOT_DIR = (Path(__file__).resolve().parent / '../../../').resolve()
         dataset_cfg.VERSION = args.version
-        create_kl_infos(
+        analyze_kl_infos(
             version=dataset_cfg.VERSION,
             data_path=ROOT_DIR / 'data' / 'kl',
             save_path=ROOT_DIR / 'data' / 'kl',
             with_cam=args.with_cam
         )
 
+    if args.func == 'create_kl_infos':
+        dataset_cfg = EasyDict(yaml.safe_load(open(args.cfg_file)))
+        ROOT_DIR = (Path(__file__).resolve().parent / '../../../').resolve()
+        dataset_cfg.VERSION = args.version
+        data_path = Path(dataset_cfg.DATA_PATH)  # 转换为 Path
+        
+        last_two_parts = data_path.parts[-2:]   # 取最后两部分，如 ('data', 'kl')
+        folder=last_two_parts[0]
+        name=last_two_parts[1]
+        # 生成pkl文件
+        create_kl_infos(
+            version=dataset_cfg.VERSION,
+            data_path=ROOT_DIR / folder / name,
+            save_path=ROOT_DIR /folder / name,
+            with_cam=args.with_cam
+        )
+
     kl_dataset = KLDataset(
         dataset_cfg=dataset_cfg, class_names=None,
-        root_path=ROOT_DIR / 'data' / 'kl',
+        root_path=ROOT_DIR / folder / name,
         logger=common_utils.create_logger(), training=True
     )
 

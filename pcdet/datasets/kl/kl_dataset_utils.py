@@ -177,27 +177,6 @@ def obtain_sensor2top(
     sweep["sensor2lidar_translation"] = T
     return sweep
 
-# # 查找最近的点云文件
-# def find_nearest_pointcloud(timestamp, pointcloud_files, pointcloud_timestamps=None):
-#     """
-#     根据时间戳查找最近的点云文件。
-#     :param timestamp: 标注文件的时间戳（整数或字符串）
-#     :param pointcloud_files: 点云文件列表（Path 对象）
-#     :param pointcloud_timestamps: 预计算的时间戳列表（可选）
-#     :return: 最近的点云文件路径（字符串）
-#     """
-#     timestamp = int(timestamp)  # 确保时间戳是整数
-
-#     # 如果没有预计算时间戳，则实时计算
-#     if pointcloud_timestamps is None:
-#         pointcloud_timestamps = [int(f.stem) for f in pointcloud_files]
-
-#     # 使用 NumPy 计算最小差值
-#     diffs = np.abs(np.array(pointcloud_timestamps) - timestamp)
-#     nearest_index = np.argmin(diffs)
-#     return str(pointcloud_files[nearest_index])
-
-
 def quaternion_to_yaw(rotation)->float:
     """
     将四元数转换为偏航角 (yaw)。
@@ -208,20 +187,26 @@ def quaternion_to_yaw(rotation)->float:
     yaw = np.arctan2(2 * (qw * qz + qx * qy), 1 - 2 * (qy**2 + qz**2))
     return yaw
 
+
+
 def convert_to_gt_boxes_7dof(xyz, lwh, rotation):
-    # 确保输入是 numpy 数组
+    """
+    将 xyz, lwh 和 rotation 转换为 [x, y, z, l, w, h, yaw]
+    支持 rotation 为四元数 [w, x, y, z] 或字典 {'x':..., 'y':..., 'z':...}
+    """
     xyz = np.asarray(xyz)
     lwh = np.asarray(lwh)
-    rotation = np.asarray(rotation)
-    
-    # 将四元数转换为偏航角
-    yaw = quaternion_to_yaw(rotation)
-    
-    # 将 xyz, lwh, yaw 拼接成 gt_boxes
-    gt_boxes = np.concatenate([xyz, lwh, [yaw]])
-    
-    return gt_boxes
 
+    if isinstance(rotation, dict):
+        # 如果是 dict，直接取 z 作为 yaw
+        yaw = rotation.get('z', 0.0)
+    else:
+        # 如果是四元数，计算 yaw
+        rotation = np.asarray(rotation)
+        yaw = quaternion_to_yaw(rotation)
+
+    gt_boxes = np.concatenate([xyz, lwh, [yaw]])
+    return gt_boxes
 
 def convert_json_to_annotations(json_data:List[dict]):
     annotations={}
@@ -230,6 +215,7 @@ def convert_json_to_annotations(json_data:List[dict]):
     gt_subtype=[]
     gt_boxes_token=[]
     gt_track_ids=[]
+    gt_num_lidar_pts=[]
     for data in json_data:
         if data['label']=='Container':
             continue
@@ -242,6 +228,7 @@ def convert_json_to_annotations(json_data:List[dict]):
         gt_subtype.append(data['subtype'])
         gt_boxes_token.append(data['track_id'])
         gt_track_ids.append(data['track_id'])
+        gt_num_lidar_pts.append(data['num_lidar_pts'])
     gt_boxes = np.vstack(gt_boxes)
     gt_names = np.array(gt_names)
     gt_subtype= np.array(gt_subtype)
@@ -249,6 +236,7 @@ def convert_json_to_annotations(json_data:List[dict]):
     gt_track_ids = np.array(gt_track_ids)
     gt_boxes_lidar=gt_boxes
     annotations['name'] = np.array(gt_names)
+    annotations['num_lidar_pts']= np.array(gt_num_lidar_pts)
     
     num_gt = len(annotations['name'])
     # 获取标签截断程度
@@ -291,19 +279,37 @@ def fill_trainval_infos(kl:KL,train_samples,val_samples,test_samples):
     train_kl_infos = []
     val_kl_infos = []
     test_kl_infos=[]
-    progress_bar = tqdm.tqdm(total=len(kl.samples), desc='create_info', dynamic_ncols=True)
-    for index, sample in enumerate(kl.samples):
-        progress_bar.update()
+    # progress_bar = tqdm.tqdm(total=len(kl.samples), desc='create_info', dynamic_ncols=True)
+    # for index, sample in enumerate(kl.samples):
+    for sample in tqdm.tqdm(kl.samples, desc='create_info', dynamic_ncols=True):
+        # progress_bar.update()
         with open(sample['label'], 'r', encoding='utf-8') as f:
             data = json.load(f)
         # gt_boxes,gt_names,gt_subtypes,gt_boxes_token,gt_track_ids=convert_json_to_gt(data)
         annotations=convert_json_to_annotations(data)
         with open(sample['extrinsics_path'], 'r', encoding='utf-8') as f:
             extrinsice_data = json.load(f)
-        with open(sample['intrinsics_path'], 'r', encoding='utf-8') as f:
-            intrinsice_data = json.load(f)
-        with open(sample['localization'], 'r', encoding='utf-8') as f:
-            state=json.load(f)
+
+        # ---------- 读取 intrinsics（若存在） ----------
+        intr_path = sample.get('intrinsics_path')
+        if intr_path is not None and Path(intr_path).exists():
+            with open(intr_path, 'r', encoding='utf-8') as f:
+                intrinsice_data = json.load(f)
+        else:
+            intrinsice_data = {}
+
+        # ---------- 读取 localization（若有） ----------
+        loc_path = sample.get('localization')
+        if loc_path:                       # 既防 None，也防空字符串/Path
+            with open(loc_path, 'r', encoding='utf-8') as f:
+                state = json.load(f)
+        else:
+            state = None            
+
+        # with open(sample['intrinsics_path'], 'r', encoding='utf-8') as f:
+        #     intrinsice_data = json.load(f)
+        # with open(sample['localization'], 'r', encoding='utf-8') as f:
+        #     state=json.load(f)
         # 为每个样本添加 timestamp、token 和 pointcloud_path
         info = {
             'token': sample['token'],
@@ -337,7 +343,7 @@ def fill_trainval_infos(kl:KL,train_samples,val_samples,test_samples):
             test_kl_infos.append(info)
         
 
-    progress_bar.close()
+    # progress_bar.close()
     return train_kl_infos, val_kl_infos,test_kl_infos
              
 

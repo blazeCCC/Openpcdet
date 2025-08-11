@@ -14,11 +14,12 @@ CLASS_NAMES:
     "Forklift",
     "Lorry",
     "ConstructionVehicle",
+    "WheelCrane",
   ]
 
 DATA_CONFIG:
   _BASE_CONFIG_: cfgs/dataset_configs/kl_dataset.yaml
-  POINT_CLOUD_RANGE: [-70.4, -40, -3, 70.4, 40, 1]
+  POINT_CLOUD_RANGE: [-70.4, -40, -3, 70.4, 40, 5]
   DATA_PROCESSOR:
     - NAME: mask_points_and_boxes_outside_range
       REMOVE_OUTSIDE_BOXES: True
@@ -27,9 +28,29 @@ DATA_CONFIG:
       SHUFFLE_ENABLED: { "train": True, "test": False }
 
     - NAME: transform_points_to_voxels
-      VOXEL_SIZE: [0.05, 0.05, 0.1]
+      VOXEL_SIZE: [0.05, 0.05, 0.2]
       MAX_POINTS_PER_VOXEL: 32
-      MAX_NUMBER_OF_VOXELS: { "train": 16000, "test": 40000 }
+      MAX_NUMBER_OF_VOXELS: { "train": 80000, "test": 40000 }
+
+  POINT_FILTER:
+    ENABLED: True
+    FILTER_MIN_POINTS_BY_CLASS:
+      Pedestrian: 5
+      Car: 10
+      IGV-Full: 10
+      Truck: 10
+      Trailer-Empty: 10
+      Trailer-Full: 10
+      IGV-Empty: 10
+      Crane: 15
+      OtherVehicle: 5
+      Cone: 5
+      ContainerForklift: 10
+      Forklift: 10
+      Lorry: 10
+      ConstructionVehicle: 20
+      WheelCrane: 15
+
   DATA_AUGMENTOR:
     DISABLE_AUG_LIST: ["placeholder"]
     AUG_CONFIG_LIST:
@@ -42,39 +63,41 @@ DATA_CONFIG:
             filter_by_min_points:
               [
                 "Pedestrian:5",
-                "Car:5",
-                "IGV-Full:5",
-                "Truck:5",
-                "Trailer-Empty:5",
-                "Trailer-Full:5",
-                "IGV-Empty:5",
-                "Crane:5",
-                "OtherVehicle:5",
+                "Car:10",
+                "IGV-Full:10",
+                "Truck:10",
+                "Trailer-Empty:10",
+                "Trailer-Full:10",
+                "IGV-Empty:10",
+                "Crane:15",
+                "OtherVehicle:3",
                 "Cone:5",
-                "ContainerForklift:5",
-                "Forklift:5",
-                "Lorry:5",
-                "ConstructionVehicle:5",
+                "ContainerForklift:10",
+                "Forklift:10",
+                "Lorry:10",
+                "ConstructionVehicle:20",
+                "WheelCrane:15",
               ],
             filter_by_difficulty: [-1],
           }
 
         SAMPLE_GROUPS:
           [
-            "Pedestrian:15",
-            "Car:15",
-            "IGV-Full:15",
-            "Truck:15",
-            "Trailer-Empty:15",
-            "Trailer-Full:15",
-            "IGV-Empty:15",
-            "Crane:15",
-            "OtherVehicle:15",
-            "Cone:15",
-            "ContainerForklift:15",
-            "Forklift:15",
-            "Lorry:15",
-            "ConstructionVehicle:15",
+            "Pedestrian:10",
+            "Car:8",
+            "IGV-Full:5",
+            "Truck:10",
+            "Trailer-Empty:10",
+            "Trailer-Full:10",
+            "IGV-Empty:6",
+            "Crane:8",
+            "OtherVehicle:5",
+            "Cone:6",
+            "ContainerForklift:5",
+            "Forklift:5",
+            "Lorry:5",
+            "ConstructionVehicle:5",
+            "WheelCrane:5",
           ]
         NUM_POINT_FEATURES: 4
         DATABASE_WITH_FAKELIDAR: False
@@ -118,22 +141,12 @@ MODEL:
 
     CLASS_NAMES_EACH_HEAD:
       [
-        [
-          "Pedestrian",
-          "Car",
-          "IGV-Full",
-          "Truck",
-          "Trailer-Empty",
-          "Trailer-Full",
-          "IGV-Empty",
-          "Crane",
-          "OtherVehicle",
-          "Cone",
-          "ContainerForklift",
-          "Forklift",
-          "Lorry",
-          "ConstructionVehicle",
-        ],
+        ["Pedestrian"],                         # head 1: 行人和小车类
+        ["Car", "IGV-Full"],                    # head 2: IGV相关
+        ["Truck", "Trailer-Empty", "Trailer-Full"],    # head 3: 工程与货车类
+        ["IGV-Empty", "Crane"],            # head 4: 拖车类
+        ["OtherVehicle", "Cone", "ContainerForklift","Forklift","Lorry"],   # head 5: 起重和叉车类
+        [ConstructionVehicle,"WheelCrane"],                     # head 6: 其他杂项类
       ]
 
     SHARED_CONV_CHANNEL: 64
@@ -149,7 +162,7 @@ MODEL:
         } # offset
 
     TARGET_ASSIGNER_CONFIG:
-      FEATURE_MAP_STRIDE: 4
+      FEATURE_MAP_STRIDE: 8
       NUM_MAX_OBJS: 500
       GAUSSIAN_OVERLAP: 0.1
       MIN_RADIUS: 2
@@ -163,7 +176,7 @@ MODEL:
         }
     POST_PROCESSING:
       SCORE_THRESH: 0.5
-      POST_CENTER_LIMIT_RANGE: [-70.4, -40, -3, 70.4, 40, 1]
+      POST_CENTER_LIMIT_RANGE: [-70.4, -40, -3, 70.4, 40, 5]
       MAX_OBJ_PER_SAMPLE: 500
       NMS_CONFIG:
         NMS_TYPE: nms_gpu
@@ -186,8 +199,8 @@ MODEL:
       NMS_POST_MAXSIZE: 500
 
 OPTIMIZATION:
-  BATCH_SIZE_PER_GPU: 8
-  NUM_EPOCHS: 100
+  BATCH_SIZE_PER_GPU: 6
+  NUM_EPOCHS: 200
 
   OPTIMIZER: adam_onecycle
   LR: 0.003

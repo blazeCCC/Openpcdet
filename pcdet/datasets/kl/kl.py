@@ -64,10 +64,12 @@ class KL():
                         sensor_files={}
                         sensor_timestamps={}
                         for name in self.sensor_names:
-                            cur_files=list((sample_lidar_path/name).glob('*.bin'))
-                            cur_timestamps=precompute_timestamps(cur_files)
-                            sensor_files[name]=cur_files
-                            sensor_timestamps[name]=cur_timestamps
+                            # 支持 .bin 和 .pcd 文件
+                            extensions = ['*.bin', '*.pcd']
+                            cur_files = [f for ext in extensions for f in (sample_lidar_path / name).glob(ext)]
+                            cur_timestamps = precompute_timestamps(cur_files)
+                            sensor_files[name] = cur_files
+                            sensor_timestamps[name] = cur_timestamps
                         
                         camera_files={}
                         camera_timestamps={}
@@ -86,9 +88,11 @@ class KL():
                                 # 构建 JSON 文件的完整路径
                                 json_path = label_scenario_path/json_file
                                 timestamp=os.path.splitext(json_file)[0]
+                                # print(timestamp)
                                 matched_lidars=match_multi_sensor_data(timestamp, sensor_files,sensor_timestamps)
                                 matched_cameras=match_multi_sensor_data(timestamp, camera_files,camera_timestamps)
-                                matched_localization=Path(match_sensor_data(timestamp, localization_files,localization_times))
+                                # matched_localization=Path(match_sensor_data(timestamp, localization_files,localization_times))
+                                matched_localization=[]
                                 sample['token']=generate_token()
                                 sample['label']=json_path
                                 sample['lidars']=matched_lidars
