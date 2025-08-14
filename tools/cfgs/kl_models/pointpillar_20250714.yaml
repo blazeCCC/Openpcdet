@@ -58,8 +58,11 @@ DATA_CONFIG:
     AUG_CONFIG_LIST:
       - NAME: gt_sampling
         USE_ROAD_PLANE: False
+        USE_SHARED_MEMORY: true
         DB_INFO_PATH:
-          - kl_dbinfos.pkl
+          - kl_dbinfos_shared.pkl
+        DB_DATA_PATH:
+          - kl_dbinfos_shared.npy
         PREPARE:
           {
             filter_by_min_points:

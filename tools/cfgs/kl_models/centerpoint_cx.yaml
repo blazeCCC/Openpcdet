@@ -19,7 +19,7 @@ CLASS_NAMES:
 
 DATA_CONFIG:
   _BASE_CONFIG_: cfgs/dataset_configs/kl_dataset.yaml
-  POINT_CLOUD_RANGE: [-60.0, -42, -3, 60.0, 42, 5]
+  POINT_CLOUD_RANGE: [-60.0, -42.24, -3, 60.0, 42.24, 5]
   DATA_PROCESSOR:
     - NAME: mask_points_and_boxes_outside_range
       REMOVE_OUTSIDE_BOXES: True
@@ -28,7 +28,7 @@ DATA_CONFIG:
       SHUFFLE_ENABLED: { "train": True, "test": False }
 
     - NAME: transform_points_to_voxels
-      VOXEL_SIZE: [0.075, 0.75, 0.2]
+      VOXEL_SIZE: [0.06, 0.06, 0.2]
       MAX_POINTS_PER_VOXEL: 32
       MAX_NUMBER_OF_VOXELS: { "train": 160000, "test": 160000 }
 
@@ -56,8 +56,11 @@ DATA_CONFIG:
     AUG_CONFIG_LIST:
       - NAME: gt_sampling
         USE_ROAD_PLANE: False
+        USE_SHARED_MEMORY: False
         DB_INFO_PATH:
           - kl_dbinfos.pkl
+        DB_DATA_PATH:
+          - kl_dbinfos_shared.npy
         PREPARE:
           {
             filter_by_min_points:
@@ -139,7 +142,7 @@ MODEL:
     NAME: CenterHead
     CLASS_AGNOSTIC: False
 
-    #CLASS_NAMES_EACH_HEAD:
+    # CLASS_NAMES_EACH_HEAD:
     #  [
     #    ["Pedestrian", "Car", "IGV-Full", "Truck", "Trailer-Empty", "Trailer-Full", "IGV-Empty", 
     #    "Crane", "OtherVehicle", "Cone", "ContainerForklift","Forklift","Lorry", "ConstructionVehicle", "WheelCrane"],                     # head 6: 其他杂项类
@@ -204,8 +207,8 @@ MODEL:
       NMS_POST_MAXSIZE: 500
 
 OPTIMIZATION:
-  BATCH_SIZE_PER_GPU: 24
-  NUM_EPOCHS: 200
+  BATCH_SIZE_PER_GPU: 12
+  NUM_EPOCHS: 2
 
   OPTIMIZER: adam_onecycle
   LR: 0.003

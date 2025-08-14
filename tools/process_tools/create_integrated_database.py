@@ -15,7 +15,7 @@ def create_integrated_db_with_infos(args, root_path):
     """
     # prepare
     db_infos_path = args.src_db_info
-    db_info_global_path = db_infos_path
+    db_info_global_path = db_infos_path.replace('.pkl', '_shared.pkl')
     global_db_path = root_path / (args.new_db_name + '.npy')
 
     db_infos = pkl.load(open(db_infos_path, 'rb'))
@@ -41,7 +41,6 @@ def create_integrated_db_with_infos(args, root_path):
             global_db_list.append(obj_points)
 
     global_db = np.concatenate(global_db_list)
-
     with open(global_db_path, 'wb') as f:
         np.save(f, global_db)
 
@@ -72,10 +71,10 @@ if __name__ == '__main__':
     import argparse
 
     parser = argparse.ArgumentParser(description='arg parser')
-    parser.add_argument('--src_db_info', type=str, default='../../data/waymo/waymo_processed_data_v0_5_0_waymo_dbinfos_train_sampled_1_multiframe_-4_to_0_tail_parallel.pkl', help='')
-    parser.add_argument('--new_db_name', type=str, default='waymo_processed_data_v0_5_0_gt_database_train_sampled_1_multiframe_-4_to_0_tail_parallel_global', help='')
-    parser.add_argument('--num_point_features', type=int, default=6, help='number of feature channels for points')
-    parser.add_argument('--class_name', type=str, default='Vehicle', help='category name for verification')
+    parser.add_argument('--src_db_info', type=str, default='../../data/kl/v1.0-mini/kl_dbinfos.pkl', help='')
+    parser.add_argument('--new_db_name', type=str, default='kl_dbinfos_shared', help='')
+    parser.add_argument('--num_point_features', type=int, default=4, help='number of feature channels for points')
+    parser.add_argument('--class_name', type=str, default='Car', help='category name for verification')
 
     args = parser.parse_args()
 
