@@ -180,79 +180,80 @@ class DepthLSSTransform(nn.Module):
             batch_dict:
                 spatial_features_img (tensor): bev features from image modality
         """
-        x = batch_dict['image_fpn'] 
-        x = x[0]
-        BN, C, H, W = x.size()
-        img = x.view(int(BN/6), 6, C, H, W)
+        with torch.autocast(device_type='cuda', enabled=False):
+            x = batch_dict['image_fpn'] 
+            x = x[0]
+            BN, C, H, W = x.size()
+            img = x.view(int(BN/6), 6, C, H, W)
 
-        camera_intrinsics = batch_dict['camera_intrinsics']
-        camera2lidar = batch_dict['camera2lidar']
-        img_aug_matrix = batch_dict['img_aug_matrix']
-        lidar_aug_matrix = batch_dict['lidar_aug_matrix']
-        lidar2image = batch_dict['lidar2image']
+            camera_intrinsics = batch_dict['camera_intrinsics']
+            camera2lidar = batch_dict['camera2lidar']
+            img_aug_matrix = batch_dict['img_aug_matrix']
+            lidar_aug_matrix = batch_dict['lidar_aug_matrix']
+            lidar2image = batch_dict['lidar2image']
 
-        intrins = camera_intrinsics[..., :3, :3]
-        post_rots = img_aug_matrix[..., :3, :3]
-        post_trans = img_aug_matrix[..., :3, 3]
-        camera2lidar_rots = camera2lidar[..., :3, :3]
-        camera2lidar_trans = camera2lidar[..., :3, 3]
+            intrins = camera_intrinsics[..., :3, :3]
+            post_rots = img_aug_matrix[..., :3, :3]
+            post_trans = img_aug_matrix[..., :3, 3]
+            camera2lidar_rots = camera2lidar[..., :3, :3]
+            camera2lidar_trans = camera2lidar[..., :3, 3]
 
-        points = batch_dict['points']
+            points = batch_dict['points']
 
-        batch_size = BN // 6
-        depth = torch.zeros(batch_size, img.shape[1], 1, *self.image_size).to(points[0].device)
+            batch_size = BN // 6
+            depth = torch.zeros(batch_size, img.shape[1], 1, *self.image_size).to(points[0].device)
 
-        for b in range(batch_size):
-            batch_mask = points[:,0] == b
-            cur_coords = points[batch_mask][:, 1:4]
-            cur_img_aug_matrix = img_aug_matrix[b]
-            cur_lidar_aug_matrix = lidar_aug_matrix[b]
-            cur_lidar2image = lidar2image[b]
+            for b in range(batch_size):
+                batch_mask = points[:,0] == b
+                cur_coords = points[batch_mask][:, 1:4]
+                cur_img_aug_matrix = img_aug_matrix[b]
+                cur_lidar_aug_matrix = lidar_aug_matrix[b]
+                cur_lidar2image = lidar2image[b]
 
-            # inverse aug
-            cur_coords -= cur_lidar_aug_matrix[:3, 3]
-            cur_coords = torch.inverse(cur_lidar_aug_matrix[:3, :3]).matmul(
-                cur_coords.transpose(1, 0)
+                # inverse aug
+                cur_coords -= cur_lidar_aug_matrix[:3, 3]
+                cur_coords = torch.inverse(cur_lidar_aug_matrix[:3, :3]).matmul(
+                    cur_coords.transpose(1, 0)
+                )
+                # lidar2image
+                cur_coords = cur_lidar2image[:, :3, :3].matmul(cur_coords)
+                cur_coords += cur_lidar2image[:, :3, 3].reshape(-1, 3, 1)
+                # get 2d coords
+                dist = cur_coords[:, 2, :]
+                cur_coords[:, 2, :] = torch.clamp(cur_coords[:, 2, :], 1e-5, 1e5)
+                cur_coords[:, :2, :] /= cur_coords[:, 2:3, :]
+
+                # do image aug
+                cur_coords = cur_img_aug_matrix[:, :3, :3].matmul(cur_coords)
+                cur_coords += cur_img_aug_matrix[:, :3, 3].reshape(-1, 3, 1)
+                cur_coords = cur_coords[:, :2, :].transpose(1, 2)
+
+                # normalize coords for grid sample
+                cur_coords = cur_coords[..., [1, 0]]
+
+                # filter points outside of images
+                on_img = (
+                    (cur_coords[..., 0] < self.image_size[0])
+                    & (cur_coords[..., 0] >= 0)
+                    & (cur_coords[..., 1] < self.image_size[1])
+                    & (cur_coords[..., 1] >= 0)
+                )
+                for c in range(on_img.shape[0]):
+                    masked_coords = cur_coords[c, on_img[c]].long()
+                    masked_dist = dist[c, on_img[c]]
+                    depth[b, c, 0, masked_coords[:, 0], masked_coords[:, 1]] = masked_dist
+
+            extra_rots = lidar_aug_matrix[..., :3, :3]
+            extra_trans = lidar_aug_matrix[..., :3, 3]
+            geom = self.get_geometry(
+                camera2lidar_rots, camera2lidar_trans, intrins, post_rots, 
+                post_trans, extra_rots=extra_rots, extra_trans=extra_trans,
             )
-            # lidar2image
-            cur_coords = cur_lidar2image[:, :3, :3].matmul(cur_coords)
-            cur_coords += cur_lidar2image[:, :3, 3].reshape(-1, 3, 1)
-            # get 2d coords
-            dist = cur_coords[:, 2, :]
-            cur_coords[:, 2, :] = torch.clamp(cur_coords[:, 2, :], 1e-5, 1e5)
-            cur_coords[:, :2, :] /= cur_coords[:, 2:3, :]
-
-            # do image aug
-            cur_coords = cur_img_aug_matrix[:, :3, :3].matmul(cur_coords)
-            cur_coords += cur_img_aug_matrix[:, :3, 3].reshape(-1, 3, 1)
-            cur_coords = cur_coords[:, :2, :].transpose(1, 2)
-
-            # normalize coords for grid sample
-            cur_coords = cur_coords[..., [1, 0]]
-
-            # filter points outside of images
-            on_img = (
-                (cur_coords[..., 0] < self.image_size[0])
-                & (cur_coords[..., 0] >= 0)
-                & (cur_coords[..., 1] < self.image_size[1])
-                & (cur_coords[..., 1] >= 0)
-            )
-            for c in range(on_img.shape[0]):
-                masked_coords = cur_coords[c, on_img[c]].long()
-                masked_dist = dist[c, on_img[c]]
-                depth[b, c, 0, masked_coords[:, 0], masked_coords[:, 1]] = masked_dist
-
-        extra_rots = lidar_aug_matrix[..., :3, :3]
-        extra_trans = lidar_aug_matrix[..., :3, 3]
-        geom = self.get_geometry(
-            camera2lidar_rots, camera2lidar_trans, intrins, post_rots, 
-            post_trans, extra_rots=extra_rots, extra_trans=extra_trans,
-        )
-        # use points depth to assist the depth prediction in images
-        x = self.get_cam_feats(img, depth)
-        x = self.bev_pool(geom, x)
-        x = self.downsample(x)
-        # convert bev features from (b, c, x, y) to (b, c, y, x)
-        x = x.permute(0, 1, 3, 2)
-        batch_dict['spatial_features_img'] = x
+            # use points depth to assist the depth prediction in images
+            x = self.get_cam_feats(img, depth)
+            x = self.bev_pool(geom, x)
+            x = self.downsample(x)
+            # convert bev features from (b, c, x, y) to (b, c, y, x)
+            x = x.permute(0, 1, 3, 2)
+            batch_dict['spatial_features_img'] = x
         return batch_dict

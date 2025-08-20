@@ -281,11 +281,11 @@ class TransFusionHead(nn.Module):
         boxes_dict = self.decode_bbox(score, rot, dim, center, height, vel)
         bboxes_tensor = boxes_dict[0]["pred_boxes"]
         gt_bboxes_tensor = gt_bboxes_3d.to(score.device)
-
-        assigned_gt_inds, ious = self.bbox_assigner.assign(
-            bboxes_tensor, gt_bboxes_tensor, gt_labels_3d,
-            score, self.point_cloud_range,
-        )
+        with torch.autocast(device_type='cuda', enabled=False):
+            assigned_gt_inds, ious = self.bbox_assigner.assign(
+                bboxes_tensor, gt_bboxes_tensor, gt_labels_3d,
+                score, self.point_cloud_range,
+            )
         pos_inds = torch.nonzero(assigned_gt_inds > 0, as_tuple=False).squeeze(-1).unique()
         neg_inds = torch.nonzero(assigned_gt_inds == 0, as_tuple=False).squeeze(-1).unique()
         pos_assigned_gt_inds = assigned_gt_inds[pos_inds] - 1

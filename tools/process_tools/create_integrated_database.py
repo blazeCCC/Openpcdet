@@ -83,3 +83,4 @@ if __name__ == '__main__':
     db_infos_global, whole_db = create_integrated_db_with_infos(args, root_path)
     # simple verify
     verify(db_infos_global[args.class_name][0], whole_db, root_path, args.num_point_features)
+# python create_integrated_database.py --src_db_info ../../data/kl/v1.0-trainval/kl_dbinfos.pkl --new_db_name kl_dbinfos_shared --num_point_features 4  --class_name Car

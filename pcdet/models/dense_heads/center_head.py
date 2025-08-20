@@ -262,10 +262,9 @@ class CenterHead(nn.Module):
                     point_cloud_range=self.point_cloud_range, voxel_size=self.voxel_size,
                     feature_map_stride=self.feature_map_stride
                 )  # (B, H, W, 7 or 9)
-
+                batch_box_preds_for_iou = batch_box_preds.permute(0, 3, 1, 2) 
                 if 'iou' in pred_dict:
-                    batch_box_preds_for_iou = batch_box_preds.permute(0, 3, 1, 2)  # (B, 7 or 9, H, W)
-
+                     # (B, 7 or 9, H, W)
                     iou_loss = loss_utils.calculate_iou_loss_centerhead(
                         iou_preds=pred_dict['iou'],
                         batch_box_preds=batch_box_preds_for_iou.clone().detach(),
@@ -292,6 +291,7 @@ class CenterHead(nn.Module):
 
 
         tb_dict['rpn_loss'] = loss.item()
+        print(tb_dict)
         return loss, tb_dict
 
     def generate_predicted_boxes(self, batch_size, pred_dicts):

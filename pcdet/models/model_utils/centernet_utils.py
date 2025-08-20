@@ -356,6 +356,33 @@ def decode_bbox_from_voxels_nuscenes(batch_size, indices, obj, rot_cos, rot_sin,
     return ret_pred_dicts
 
 
+class SafeAtan2(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, y, x, epsilon=1e-8):
+        ctx.save_for_backward(y, x)
+        ctx.epsilon = epsilon
+        return torch.atan2(y, x)
+    
+    @staticmethod
+    def backward(ctx, grad_output):
+        y, x = ctx.saved_tensors
+        epsilon = ctx.epsilon
+        
+        denominator = x.pow(2) + y.pow(2) + epsilon
+        grad_y = x / denominator * grad_output
+        grad_x = -y / denominator * grad_output
+        
+        # 梯度截断
+        max_grad = 1e6
+        grad_y = torch.clamp(grad_y, -max_grad, max_grad)
+        grad_x = torch.clamp(grad_x, -max_grad, max_grad)
+        
+        return grad_y, grad_x, None
+
+
+
+
+
 def decode_bbox_from_pred_dicts(pred_dict, point_cloud_range=None, voxel_size=None, feature_map_stride=None):
     batch_size, _, H, W = pred_dict['center'].shape
 
@@ -366,7 +393,23 @@ def decode_bbox_from_pred_dicts(pred_dict, point_cloud_range=None, voxel_size=No
     batch_rot_sin = pred_dict['rot'][:, 1].unsqueeze(dim=1).permute(0, 2, 3, 1).contiguous().view(batch_size, H*W, 1)  # (B, H, W, 1)
     batch_vel = pred_dict['vel'].permute(0, 2, 3, 1).contiguous().view(batch_size, H*W, 2) if 'vel' in pred_dict.keys() else None
 
-    angle = torch.atan2(batch_rot_sin, batch_rot_cos)  # (B, H*W, 1)
+    # angle = torch.atan2(batch_rot_sin, batch_rot_cos + 1e-5)  # (B, H*W, 1)
+    # 使用更稳定的偏移量
+    # epsilon = 1e-7  # 更小的阈值
+    # angle = torch.atan2(batch_rot_sin, torch.sign(batch_rot_cos)*torch.max(torch.abs(batch_rot_cos), epsilon*torch.ones_like(batch_rot_cos)))
+    # print(torch.isnan(angle).any())
+    # safe_atan2 = SafeAtan2.apply
+
+    # 使用方式
+    # angle = safe_atan2(batch_rot_sin, batch_rot_cos)
+
+
+    epsilon = 1e-10
+    near_zeros = batch_rot_cos.abs() < epsilon
+    denominator = batch_rot_cos * (near_zeros.logical_not())
+    denominator = denominator + (near_zeros * epsilon)
+    angle = torch.atan2(batch_rot_sin, denominator)
+
 
     ys, xs = torch.meshgrid([torch.arange(0, H, device=batch_center.device, dtype=batch_center.dtype),
                              torch.arange(0, W, device=batch_center.device, dtype=batch_center.dtype)])
