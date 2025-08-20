@@ -403,29 +403,12 @@ def decode_bbox_from_pred_dicts(pred_dict, point_cloud_range=None, voxel_size=No
     # 使用方式
     # angle = safe_atan2(batch_rot_sin, batch_rot_cos)
 
-    def preprocess_trig_values(sin, cos, epsilon=1e-8):
-        """
-        预处理三角函数值，确保数值稳定性
-        """
-        # 确保sin² + cos² ≈ 1
-        norm = torch.sqrt(sin.pow(2) + cos.pow(2) + epsilon)
-        sin_normalized = sin / norm
-        cos_normalized = cos / norm
-        
-        # 避免过小的值
-        sin_safe = torch.where(sin_normalized.abs() < epsilon, 
-                              epsilon * torch.sign(sin_normalized), 
-                              sin_normalized)
-        cos_safe = torch.where(cos_normalized.abs() < epsilon, 
-                              epsilon * torch.sign(cos_normalized), 
-                              cos_normalized)
-        
-        return sin_safe, cos_safe
 
-    # 使用前先预处理
-    batch_rot_sin_safe, batch_rot_cos_safe = preprocess_trig_values(batch_rot_sin, batch_rot_cos)
-    angle = torch.atan2(batch_rot_sin_safe, batch_rot_cos_safe)
-
+    epsilon = 1e-10
+    near_zeros = batch_rot_cos.abs() < epsilon
+    denominator = batch_rot_cos * (near_zeros.logical_not())
+    denominator = denominator + (near_zeros * epsilon)
+    angle = torch.atan2(batch_rot_sin, denominator)
 
 
     ys, xs = torch.meshgrid([torch.arange(0, H, device=batch_center.device, dtype=batch_center.dtype),
