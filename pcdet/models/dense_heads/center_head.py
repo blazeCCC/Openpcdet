@@ -236,57 +236,57 @@ class CenterHead(nn.Module):
 
         tb_dict = {}
         loss = 0
+        with torch.cuda.amp.autocast(enabled=False):
+            for idx, pred_dict in enumerate(pred_dicts):
+                pred_dict['hm'] = self.sigmoid(pred_dict['hm'])
+                hm_loss = self.hm_loss_func(pred_dict['hm'], target_dicts['heatmaps'][idx])
+                hm_loss *= self.model_cfg.LOSS_CONFIG.LOSS_WEIGHTS['cls_weight']
 
-        for idx, pred_dict in enumerate(pred_dicts):
-            pred_dict['hm'] = self.sigmoid(pred_dict['hm'])
-            hm_loss = self.hm_loss_func(pred_dict['hm'], target_dicts['heatmaps'][idx])
-            hm_loss *= self.model_cfg.LOSS_CONFIG.LOSS_WEIGHTS['cls_weight']
+                target_boxes = target_dicts['target_boxes'][idx]
+                pred_boxes = torch.cat([pred_dict[head_name] for head_name in self.separate_head_cfg.HEAD_ORDER], dim=1)
 
-            target_boxes = target_dicts['target_boxes'][idx]
-            pred_boxes = torch.cat([pred_dict[head_name] for head_name in self.separate_head_cfg.HEAD_ORDER], dim=1)
+                reg_loss = self.reg_loss_func(
+                    pred_boxes, target_dicts['masks'][idx], target_dicts['inds'][idx], target_boxes
+                )
+                loc_loss = (reg_loss * reg_loss.new_tensor(self.model_cfg.LOSS_CONFIG.LOSS_WEIGHTS['code_weights'])).sum()
+                loc_loss = loc_loss * self.model_cfg.LOSS_CONFIG.LOSS_WEIGHTS['loc_weight']
 
-            reg_loss = self.reg_loss_func(
-                pred_boxes, target_dicts['masks'][idx], target_dicts['inds'][idx], target_boxes
-            )
-            loc_loss = (reg_loss * reg_loss.new_tensor(self.model_cfg.LOSS_CONFIG.LOSS_WEIGHTS['code_weights'])).sum()
-            loc_loss = loc_loss * self.model_cfg.LOSS_CONFIG.LOSS_WEIGHTS['loc_weight']
+                loss += hm_loss + loc_loss
+                tb_dict['hm_loss_head_%d' % idx] = hm_loss.item()
+                tb_dict['loc_loss_head_%d' % idx] = loc_loss.item()
 
-            loss += hm_loss + loc_loss
-            tb_dict['hm_loss_head_%d' % idx] = hm_loss.item()
-            tb_dict['loc_loss_head_%d' % idx] = loc_loss.item()
+                if 'iou' in pred_dict or self.model_cfg.get('IOU_REG_LOSS', False):
 
-            if 'iou' in pred_dict or self.model_cfg.get('IOU_REG_LOSS', False):
+                    batch_box_preds = centernet_utils.decode_bbox_from_pred_dicts(
+                        pred_dict=pred_dict,
+                        point_cloud_range=self.point_cloud_range, voxel_size=self.voxel_size,
+                        feature_map_stride=self.feature_map_stride
+                    )  # (B, H, W, 7 or 9)
+                    batch_box_preds_for_iou = batch_box_preds.permute(0, 3, 1, 2) 
+                    if 'iou' in pred_dict:
+                        # (B, 7 or 9, H, W)
+                        iou_loss = loss_utils.calculate_iou_loss_centerhead(
+                            iou_preds=pred_dict['iou'],
+                            batch_box_preds=batch_box_preds_for_iou.clone().detach(),
+                            mask=target_dicts['masks'][idx],
+                            ind=target_dicts['inds'][idx], gt_boxes=target_dicts['target_boxes_src'][idx]
+                        )
+                        loss += iou_loss
+                        tb_dict['iou_loss_head_%d' % idx] = iou_loss.item()
 
-                batch_box_preds = centernet_utils.decode_bbox_from_pred_dicts(
-                    pred_dict=pred_dict,
-                    point_cloud_range=self.point_cloud_range, voxel_size=self.voxel_size,
-                    feature_map_stride=self.feature_map_stride
-                )  # (B, H, W, 7 or 9)
-                batch_box_preds_for_iou = batch_box_preds.permute(0, 3, 1, 2) 
-                if 'iou' in pred_dict:
-                     # (B, 7 or 9, H, W)
-                    iou_loss = loss_utils.calculate_iou_loss_centerhead(
-                        iou_preds=pred_dict['iou'],
-                        batch_box_preds=batch_box_preds_for_iou.clone().detach(),
-                        mask=target_dicts['masks'][idx],
-                        ind=target_dicts['inds'][idx], gt_boxes=target_dicts['target_boxes_src'][idx]
-                    )
-                    loss += iou_loss
-                    tb_dict['iou_loss_head_%d' % idx] = iou_loss.item()
-
-                if self.model_cfg.get('IOU_REG_LOSS', False):
-                    iou_reg_loss = loss_utils.calculate_iou_reg_loss_centerhead(
-                        batch_box_preds=batch_box_preds_for_iou,
-                        mask=target_dicts['masks'][idx],
-                        ind=target_dicts['inds'][idx], gt_boxes=target_dicts['target_boxes_src'][idx]
-                    )
-                    if target_dicts['masks'][idx].sum().item() != 0:
-                        iou_reg_loss = iou_reg_loss * self.model_cfg.LOSS_CONFIG.LOSS_WEIGHTS['loc_weight']
-                        loss += iou_reg_loss
-                        tb_dict['iou_reg_loss_head_%d' % idx] = iou_reg_loss.item()
-                    else:
-                        loss += (batch_box_preds_for_iou * 0.).sum()
-                        tb_dict['iou_reg_loss_head_%d' % idx] = (batch_box_preds_for_iou * 0.).sum()
+                    if self.model_cfg.get('IOU_REG_LOSS', False):
+                        iou_reg_loss = loss_utils.calculate_iou_reg_loss_centerhead(
+                            batch_box_preds=batch_box_preds_for_iou,
+                            mask=target_dicts['masks'][idx],
+                            ind=target_dicts['inds'][idx], gt_boxes=target_dicts['target_boxes_src'][idx]
+                        )
+                        if target_dicts['masks'][idx].sum().item() != 0:
+                            iou_reg_loss = iou_reg_loss * self.model_cfg.LOSS_CONFIG.LOSS_WEIGHTS['loc_weight']
+                            loss += iou_reg_loss
+                            tb_dict['iou_reg_loss_head_%d' % idx] = iou_reg_loss.item()
+                        else:
+                            loss += (batch_box_preds_for_iou * 0.).sum()
+                            tb_dict['iou_reg_loss_head_%d' % idx] = (batch_box_preds_for_iou * 0.).sum()
 
 
 
@@ -383,34 +383,37 @@ class CenterHead(nn.Module):
         return rois, roi_scores, roi_labels
 
     def forward(self, data_dict):
-        spatial_features_2d = data_dict['spatial_features_2d']
-        x = self.shared_conv(spatial_features_2d)
+        with torch.cuda.amp.autocast(enabled=False):
+            spatial_features_2d = data_dict['spatial_features_2d'].to(self.shared_conv[0].weight.dtype)
+            
+            x = self.shared_conv(spatial_features_2d)
 
-        pred_dicts = []
-        for head in self.heads_list:
-            pred_dicts.append(head(x))
+            pred_dicts = []
+            for head in self.heads_list:
+                pred_dicts.append(head(x))
+                
 
-        if self.training:
-            target_dict = self.assign_targets(
-                data_dict['gt_boxes'], feature_map_size=spatial_features_2d.size()[2:],
-                feature_map_stride=data_dict.get('spatial_features_2d_strides', None)
-            )
-            self.forward_ret_dict['target_dicts'] = target_dict
+            if self.training:
+                target_dict = self.assign_targets(
+                    data_dict['gt_boxes'], feature_map_size=spatial_features_2d.size()[2:],
+                    feature_map_stride=data_dict.get('spatial_features_2d_strides', None)
+                )
+                self.forward_ret_dict['target_dicts'] = target_dict
 
-        self.forward_ret_dict['pred_dicts'] = pred_dicts
+            self.forward_ret_dict['pred_dicts'] = pred_dicts
 
-        if not self.training or self.predict_boxes_when_training:
-            pred_dicts = self.generate_predicted_boxes(
-                data_dict['batch_size'], pred_dicts
-            )
+            if not self.training or self.predict_boxes_when_training:
+                pred_dicts = self.generate_predicted_boxes(
+                    data_dict['batch_size'], pred_dicts
+                )
 
-            if self.predict_boxes_when_training:
-                rois, roi_scores, roi_labels = self.reorder_rois_for_refining(data_dict['batch_size'], pred_dicts)
-                data_dict['rois'] = rois
-                data_dict['roi_scores'] = roi_scores
-                data_dict['roi_labels'] = roi_labels
-                data_dict['has_class_labels'] = True
-            else:
-                data_dict['final_box_dicts'] = pred_dicts
+                if self.predict_boxes_when_training:
+                    rois, roi_scores, roi_labels = self.reorder_rois_for_refining(data_dict['batch_size'], pred_dicts)
+                    data_dict['rois'] = rois
+                    data_dict['roi_scores'] = roi_scores
+                    data_dict['roi_labels'] = roi_labels
+                    data_dict['has_class_labels'] = True
+                else:
+                    data_dict['final_box_dicts'] = pred_dicts
 
-        return data_dict
+            return data_dict
