@@ -18,6 +18,7 @@ import torch
 
 from pcdet.config import cfg, cfg_from_yaml_file
 from pcdet.datasets.kl.kl_dataset import KLDataset
+from pcdet.datasets import DatasetTemplate
 from pcdet.models import build_network, load_data_to_gpu
 from pcdet.utils import common_utils
 
@@ -38,9 +39,9 @@ def parse_config():
     )
 
     parser.add_argument(
-        "--version",
+        "--data",
         type=str,
-        default="v1.0-trainval",
+        default="",
         help="specify the pretrained model",
     )
 
@@ -51,6 +52,47 @@ def parse_config():
     return args, cfg
 
 
+class OwnDataset(DatasetTemplate):
+    def __init__(self, dataset_cfg, class_names, training=True, root_path=None, logger=None, ext='.bin'):
+        """
+        Args:
+            root_path:
+            dataset_cfg:
+            class_names:
+            training:
+            logger:
+        """
+        super().__init__(
+            dataset_cfg=dataset_cfg, class_names=class_names, training=training, root_path=root_path, logger=logger
+        )
+        self.root_path = root_path
+        self.ext = ext
+        data_file_list = glob.glob(str(root_path / f'*{self.ext}')) if self.root_path.is_dir() else [self.root_path]
+
+        data_file_list.sort()
+        self.sample_file_list = data_file_list
+
+    def __len__(self):
+        return len(self.sample_file_list)
+
+    def __getitem__(self, index):
+        if self.ext == '.bin':
+            print(self.sample_file_list[index])
+            points = np.fromfile(self.sample_file_list[index], dtype=np.float32).reshape(-1, 4)
+        elif self.ext == '.npy':
+            points = np.load(self.sample_file_list[index])
+        else:
+            raise NotImplementedError
+
+        input_dict = {
+            'points': points,
+            'frame_id': index,
+        }
+
+        data_dict = self.prepare_data(data_dict=input_dict)
+        return data_dict
+
+
 def main():
     args, cfg = parse_config()
     logger = common_utils.create_logger()
@@ -58,10 +100,10 @@ def main():
     dataset_cfg=cfg.DATA_CONFIG
     ROOT_DIR = (Path(__file__).resolve().parent / '../').resolve()
     
-    kl_dataset = KLDataset(
+    kl_dataset = OwnDataset(
         dataset_cfg=dataset_cfg, class_names=cfg.CLASS_NAMES,
-        root_path=ROOT_DIR / 'data' / 'kl',
-        logger=common_utils.create_logger(), training=True
+        root_path=Path(args.data),
+        logger=common_utils.create_logger(), training=False
     )
 
     logger.info(f"Total number of samples: \t{len(kl_dataset)}")
@@ -85,6 +127,7 @@ def main():
                 ref_scores=pred_dicts[0]["pred_scores"],
                 ref_labels=pred_dicts[0]["pred_labels"],
             )
+            print(pred_dicts)
 
             if not OPEN3D_FLAG:
                 mlab.show(stop=True)

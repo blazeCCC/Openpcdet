@@ -472,3 +472,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# python export_onnx.py --cfg_file cfgs/kitti_models/pointpillar.yaml --data_path demo_data --ckpt /home/cx/Downloads/pointpillar.pth --out_dir model --batch_size 1
